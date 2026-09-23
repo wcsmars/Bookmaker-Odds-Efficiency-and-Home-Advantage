@@ -13,10 +13,6 @@ node_modules/
 *.key
 .idea/
 .vscode/
-.agents/
-.claude/
-.codex/
-.public-maintenance/
 *.log
 build/
 dist/
@@ -27,7 +23,7 @@ data/raw/
 # Third-party inputs and large per-match intermediates stay local.
 home-advantage/data/
 forecasting/data/
-# Drafts, slides and their export tooling are kept out of this release.
+# Local documents and build tooling
 paper/
 presentation/
 deck/
