@@ -1,0 +1,4 @@
+period,Matches,Home win %,Draw %,Away win %,Home goals,Away goals,Goal margin,Points margin,Home points,Yellows A-H,Fouls A-H,Implied home prob
+pre,10430,45.494,25.005,29.501,1.543,1.182,0.361,0.48,1.615,0.263,0.429,0.449
+ghost,2251,40.338,25.056,34.607,1.486,1.324,0.162,0.172,1.461,0.017,-0.192,0.421
+post,8908,43.534,25.382,31.084,1.547,1.264,0.283,0.373,1.56,0.271,0.304,0.439

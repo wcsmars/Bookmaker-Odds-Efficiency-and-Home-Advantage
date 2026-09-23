@@ -1,0 +1,14 @@
+cff-version: 1.2.0
+message: "If you use this research code, please cite this repository and acknowledge the original data provider."
+type: software
+title: "European Football Forecasting and Home Advantage"
+authors:
+  - family-names: Wong
+    given-names: Chung Shing Mars
+license: MIT
+abstract: "Python research on football probability forecasts, bookmaker benchmarks and home advantage, with walk-forward evaluation and clustered panel inference."
+keywords:
+  - sports analytics
+  - probabilistic forecasting
+  - econometrics
+  - model validation
