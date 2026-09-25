@@ -57,14 +57,22 @@ python scripts/check_release.py
 python -m unittest discover -s tests
 ```
 
-This standard-library check verifies agreement between aggregate JSON and CSV
-tables, test-sample counts, the blend's matched market comparison, the full ROI
-range, the within-season inference table, the input manifest and local document
-links. The unit tests rerun those checks, confirm that the headline claims in the
-READMEs agree with the saved results, and exercise the pipeline runner's handling
-of missing, empty and revised input files. A GitHub Actions workflow runs both
-and checks Python syntax on pushes and pull requests. CI does not download
-inputs or refit the studies.
+This standard-library check compares every one of the 19 CSV tables with its
+result JSON (coefficients, standard errors and significance stars included),
+requires all nine figures, rejects non-finite values and non-positive standard
+errors, and checks test-sample counts, the blend's matched market comparison,
+the full ROI range, the input manifest (file names, URLs and unique digests) and
+local document links. In a git checkout, links count only when their target is
+tracked, so a link to a private or ignored file fails before publication. The
+unit tests rerun those checks, confirm that the headline numbers in the READMEs
+match the saved results, show that corrupted tables are rejected, and exercise
+the pipeline runner's handling of missing, empty and revised input files.
+
+`python tests/smoke_pipeline.py` needs the research dependencies. It runs both
+studies end to end on synthetic Football-Data-style inputs in a temporary copy
+and applies the same consistency checks to the regenerated outputs. A GitHub
+Actions workflow runs the offline checks, a Python syntax check and the smoke
+test on pushes and pull requests. CI does not download the source data.
 
 ## Scope
 

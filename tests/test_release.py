@@ -5,16 +5,19 @@ Run from the repository root with: python -m unittest discover -s tests
 from __future__ import annotations
 
 import contextlib
+import csv
 import hashlib
 import importlib.util
 import io
 import json
 from pathlib import Path
+import shutil
 import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 STANDALONE_MODELS = ("elo", "logit", "gbm", "dpois")
+MINUS = "−"
 
 
 def load_script(name: str):
@@ -31,16 +34,19 @@ run_pipeline = load_script("run_pipeline")
 class ReleaseChecks(unittest.TestCase):
     """Each offline release check passes on the included outputs."""
 
-    def assert_passes(self, check) -> None:
+    def assert_passes(self, check, *args) -> None:
         with contextlib.redirect_stdout(io.StringIO()) as output:
-            check()
+            check(*args)
         self.assertTrue(output.getvalue().startswith("PASS"), output.getvalue())
 
     def test_forecasting_tables_match_results(self):
-        self.assert_passes(check_release.check_forecast)
+        self.assert_passes(check_release.check_forecast_tables)
 
     def test_home_advantage_tables_match_results(self):
-        self.assert_passes(check_release.check_home)
+        self.assert_passes(check_release.check_home_tables)
+
+    def test_all_figures_present(self):
+        self.assert_passes(check_release.check_figures)
 
     def test_source_manifest_is_complete(self):
         self.assert_passes(check_release.check_manifest)
@@ -48,14 +54,82 @@ class ReleaseChecks(unittest.TestCase):
     def test_documentation_links_resolve(self):
         self.assert_passes(check_release.check_documentation)
 
+    def test_published_expectations(self):
+        self.assert_passes(check_release.check_published_forecast)
+        self.assert_passes(check_release.check_published_home)
+
+
+class ChecksDetectCorruption(unittest.TestCase):
+    """The consistency layer rejects outputs that no longer agree with the JSON."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name) / "copy"
+        for item in ("forecasting/output", "home-advantage/output", "data"):
+            shutil.copytree(ROOT / item, self.root / item)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def edit_csv(self, relative: str, row: int, column: str, value: str) -> None:
+        path = self.root / relative
+        with path.open(encoding="utf-8", newline="") as stream:
+            reader = csv.DictReader(stream)
+            rows, fields = list(reader), reader.fieldnames
+        rows[row][column] = value
+        with path.open("w", encoding="utf-8", newline="") as stream:
+            writer = csv.DictWriter(stream, fields)
+            writer.writeheader()
+            writer.writerows(rows)
+
+    def test_changed_period_score_is_caught(self):
+        self.edit_csv("forecasting/output/tables/t3_rps_by_period.csv", 0, "pre", "0.99999")
+        with self.assertRaisesRegex(check_release.CheckFailure, "t3"):
+            check_release.check_forecast_tables(self.root)
+
+    def test_changed_coefficient_cell_is_caught(self):
+        self.edit_csv("home-advantage/output/tables/table2_main.csv", 0, "ghost", "-0.098*** (0.050)")
+        with self.assertRaisesRegex(check_release.CheckFailure, "table2_main margin ghost"):
+            check_release.check_home_tables(self.root)
+
+    def test_changed_calibration_table_is_caught(self):
+        self.edit_csv("forecasting/output/tables/cal_market_home.csv", 0, "o_rate", "0.5")
+        with self.assertRaisesRegex(check_release.CheckFailure, "cal_market_home"):
+            check_release.check_forecast_tables(self.root)
+
+    def test_non_finite_json_is_rejected(self):
+        path = self.root / "home-advantage/output/results.json"
+        path.write_text(path.read_text(encoding="utf-8").replace('"matches": 21589', '"matches": NaN'),
+                        encoding="utf-8")
+        with self.assertRaisesRegex(check_release.CheckFailure, "Non-finite"):
+            check_release.check_home_tables(self.root)
+
+    def test_missing_figure_is_caught(self):
+        (self.root / "forecasting/output/figures/fig3_market_bias.png").unlink()
+        with self.assertRaisesRegex(check_release.CheckFailure, "fig3_market_bias"):
+            check_release.check_figures(self.root)
+
+    def test_manifest_url_must_match_file(self):
+        path = self.root / "data/source_manifest.json"
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+        manifest["files"][0]["url"] = "https://www.football-data.co.uk/mmz4281/1516/E0.csv"
+        path.write_text(json.dumps(manifest), encoding="utf-8")
+        with self.assertRaisesRegex(check_release.CheckFailure, "URL"):
+            check_release.check_manifest(self.root)
+
 
 class ReportedClaims(unittest.TestCase):
     """Headline statements in the READMEs agree with the saved results."""
 
     @classmethod
     def setUpClass(cls):
+        def prose(path):  # Markdown with bold markers removed and line wraps joined
+            return " ".join((ROOT / path).read_text(encoding="utf-8").replace("**", "").split())
         cls.forecast = check_release.load_json(ROOT / "forecasting/output/results.json")
         cls.home = check_release.load_json(ROOT / "home-advantage/output/results.json")
+        cls.readme = prose("README.md")
+        cls.forecast_readme = prose("forecasting/README.md")
+        cls.home_readme = prose("home-advantage/README.md")
 
     def test_market_beats_every_standalone_model_pooled(self):
         pooled = self.forecast["pooled"]
@@ -87,6 +161,47 @@ class ReportedClaims(unittest.TestCase):
             ghost = self.home["main"][outcome]["coefs"]["ghost"]
             self.assertLess(ghost["ci_hi"], 0, outcome)
 
+    def test_readme_forecast_numbers_match_results(self):
+        pooled = self.forecast["pooled"]
+        for text in (self.readme, self.forecast_readme):
+            for model in ("market", "logit", "gbm", "blend"):
+                self.assertIn(f"{pooled[model]['rps']:.5f}", text, model)
+            self.assertIn(f"{self.forecast['market_on_blend_sample']['rps']:.5f}", text)
+            self.assertIn(f"{pooled['market']['n']:,.0f}", text)
+            self.assertIn(f"{pooled['blend']['n']:,.0f}", text)
+        rois = [entry["roi"] for model in ("logit", "gbm", "dpois", "blend")
+                for key, entry in self.forecast["backtest"][model].items() if key.startswith("theta_")]
+        roi_range = f"{MINUS}{-100 * min(rois):.1f}% to {MINUS}{-100 * max(rois):.1f}%"
+        self.assertIn(roi_range, self.readme)
+        self.assertIn(roi_range, self.forecast_readme)
+        bias = {row["season"]: row for row in self.forecast["market_bias_by_season"]}
+        for season in ("2020-21", "2024-25"):
+            self.assertIn(f"{MINUS}{-100 * bias[season]['bias']:.2f} pp", self.forecast_readme, season)
+            self.assertLess(bias[season]["ci_hi"], 0, season)
+        clv = self.forecast["backtest"]["gbm"]["clv"]
+        self.assertIn(f"+{100 * clv['mean_clv']:.2f}% on {clv['n']:,} selected bets", self.forecast_readme)
+
+    def test_readme_home_advantage_numbers_match_results(self):
+        main = self.home["main"]
+        ghost = main["margin"]["coefs"]["ghost"]
+        expected = [
+            f"{MINUS}{-ghost['coef']:.3f} goals",
+            f"{MINUS}{-100 * main['home_win']['coefs']['ghost']['coef']:.1f} percentage points",
+            f"+{main['margin']['coefs']['home_adv_const']['coef']:.3f} goals",
+            f"{MINUS}{-main['yellow_diff']['coefs']['ghost']['coef']:.3f} cards",
+            f"95% CI {MINUS}{-ghost['ci_lo']:.3f} to {MINUS}{-ghost['ci_hi']:.3f}",
+            f"{self.home['counts']['matches']:,} matches",
+        ]
+        for claim in expected:
+            self.assertIn(claim, self.home_readme, claim)
+        self.assertIn(expected[0], self.readme)
+        self.assertIn(expected[1], self.readme)
+        recovery = self.home["recovery"]["margin"]["coefs"]
+        self.assertIn(f"{MINUS}{-recovery['post_2425']['coef']:.3f} goals", self.home_readme)
+        self.assertIn(f"{MINUS}{-recovery['post_2526']['coef']:.3f} goals", self.home_readme)
+        share = -ghost["coef"] / main["margin"]["coefs"]["home_adv_const"]["coef"]
+        self.assertIn(f"approximately {round(100 * share / 5) * 5}%", self.home_readme)
+
 
 class PipelineRunner(unittest.TestCase):
     """The runner points at existing scripts and refuses incomplete inputs."""
@@ -96,8 +211,8 @@ class PipelineRunner(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
         (self.root / "data").mkdir()
-        manifest = (ROOT / "data/source_manifest.json").read_text()
-        (self.root / "data/source_manifest.json").write_text(manifest)
+        manifest = (ROOT / "data/source_manifest.json").read_text(encoding="utf-8")
+        (self.root / "data/source_manifest.json").write_text(manifest, encoding="utf-8")
         self.files = json.loads(manifest)["files"]
         run_pipeline.ROOT = self.root
 
@@ -141,7 +256,8 @@ class PipelineRunner(unittest.TestCase):
         digest = hashlib.sha256(content).hexdigest()
         for item in self.files:
             item["sha256"] = digest
-        (self.root / "data/source_manifest.json").write_text(json.dumps({"files": self.files}))
+        (self.root / "data/source_manifest.json").write_text(json.dumps({"files": self.files}),
+                                                             encoding="utf-8")
         self.write_inputs(content)
         run_pipeline.check_inputs(require_snapshot=True)
 

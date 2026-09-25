@@ -51,13 +51,17 @@ for f in raw_files:
 
 m = pd.concat(frames, ignore_index=True)
 m["Date"] = pd.to_datetime(m["Date"], dayfirst=True, format="mixed")
-m = m.dropna(subset=["Date", "HomeTeam", "AwayTeam", "FTHG", "FTAG", "B365H", "B365D", "B365A"])
+# Every completed match updates the sequential Elo and form state below. Rows
+# without a complete Bet365 price are excluded only from the written feature
+# table, so the market benchmark and the models share one evaluation sample.
+m = m.dropna(subset=["Date", "HomeTeam", "AwayTeam", "FTHG", "FTAG"])
 m = m.sort_values(["Date", "Div", "HomeTeam"]).reset_index(drop=True)
 m["y"] = m["FTR"].map({"H": 0, "D": 1, "A": 2})
 if m["y"].isna().any():
     raise ValueError("Unrecognized full-time result; expected H, D, or A.")
 m["y"] = m["y"].astype(int)
-if (m[["B365H", "B365D", "B365A"]] <= 1).any().any():
+has_odds = m[["B365H", "B365D", "B365A"]].notna().all(axis=1)
+if (m.loc[has_odds, ["B365H", "B365D", "B365A"]] <= 1).any().any():
     raise ValueError("Pre-match decimal odds must be greater than one.")
 # With date-only ordering, sequential updates require at most one fixture per
 # team per date. Refuse ambiguous inputs rather than use same-day outcomes.
@@ -82,8 +86,10 @@ def shin_probs(inv):
         return inv / s
 
 inv = 1.0 / m[["B365H", "B365D", "B365A"]].to_numpy()
-m[["mkt_H", "mkt_D", "mkt_A"]] = inv / inv.sum(axis=1, keepdims=True)
-shin = np.vstack([shin_probs(row) for row in inv])
+with np.errstate(invalid="ignore"):
+    m[["mkt_H", "mkt_D", "mkt_A"]] = inv / inv.sum(axis=1, keepdims=True)
+shin = np.full_like(inv, np.nan)
+shin[has_odds.to_numpy()] = np.vstack([shin_probs(row) for row in inv[has_odds.to_numpy()]])
 m[["shin_H", "shin_D", "shin_A"]] = shin
 m["overround"] = inv.sum(axis=1) - 1
 
@@ -97,8 +103,13 @@ ELO_ENTRY, ELO_HA, ELO_K = 1400.0, 60.0, 20.0
 elo = {}
 last_season_seen = {}
 elo_h_col, elo_a_col = np.empty(len(m)), np.empty(len(m))
+# Row index -> clubs whose rating is reset at that match. The rolling-form
+# pass below clears their form history at the same match, so a club returning
+# after an absence is treated like a newly observed club rather than carrying
+# form from a stint at least one season earlier.
+resets = defaultdict(list)
 
-def get_elo(div, team, season):
+def get_elo(div, team, season, row):
     key = (div, team)
     if key not in elo:
         elo[key] = ELO_ENTRY
@@ -106,12 +117,13 @@ def get_elo(div, team, season):
         prev, cur = last_season_seen[key], season
         if prev != cur and int(cur[:4]) - int(prev[:4]) > 1:
             elo[key] = ELO_ENTRY  # returned after an absence: reset
+            resets[row].append(key)
     last_season_seen[key] = season
     return elo[key]
 
 for i, r in enumerate(m.itertuples(index=False)):
-    ra = get_elo(r.Div, r.HomeTeam, r.season)
-    rb = get_elo(r.Div, r.AwayTeam, r.season)
+    ra = get_elo(r.Div, r.HomeTeam, r.season, i)
+    rb = get_elo(r.Div, r.AwayTeam, r.season, i)
     elo_h_col[i], elo_a_col[i] = ra, rb
     exp_home = 1.0 / (1.0 + 10 ** (-((ra + ELO_HA) - rb) / 400.0))
     res = 1.0 if r.FTHG > r.FTAG else (0.5 if r.FTHG == r.FTAG else 0.0)
@@ -147,9 +159,14 @@ def venue_stats(key):
     return dict(vppg=a[:, 0].mean(), vgd=a[:, 1].mean())
 
 rows_out = []
-for r in m.itertuples(index=False):
+for i, r in enumerate(m.itertuples(index=False)):
     hk, ak = (r.Div, r.HomeTeam), (r.Div, r.AwayTeam)
-    # season match counters / promoted flags
+    for key in resets.get(i, ()):  # rating reset for a returning club
+        hist.pop(key, None)
+        hist_venue.pop((key, "H"), None)
+        hist_venue.pop((key, "A"), None)
+        last_date.pop(key, None)
+    # season match counters
     for k, team in [(hk, r.HomeTeam), (ak, r.AwayTeam)]:
         if seen_season.get(k) != r.season:
             seen_season[k] = r.season
@@ -191,8 +208,12 @@ out = pd.concat([m.reset_index(drop=True), feat], axis=1)
 for c in ["ppg5", "ppg10", "gf5", "ga5", "sotf5", "sota5", "cor5", "vppg", "vgd", "rest", "played"]:
     out[f"d_{c}"] = out[f"h_{c}"] - out[f"a_{c}"]
 
+# The evaluation sample requires a complete pre-match Bet365 price.
+dropped = int((~has_odds).sum())
+out = out[has_odds.to_numpy()].reset_index(drop=True)
 out.to_csv(OUT / "features.csv", index=False)
 print(f"Matches: {len(out)}   Date range: {out['Date'].min().date()} .. {out['Date'].max().date()}")
+print(f"Completed matches without a complete Bet365 price (used for Elo/form only): {dropped}")
 print(f"Seasons: {out['season'].nunique()}   Leagues: {out['Div'].nunique()}")
 print(f"Closing odds available: {out['mktC_H'].notna().sum()} matches (from {out.loc[out['mktC_H'].notna(), 'season'].min()})")
 print(f"Mean overround: {out['overround'].mean():.4f}")

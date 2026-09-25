@@ -6,6 +6,7 @@ settles the same bets at closing odds (available 2019-20 onward).
 Writes backtest results into output/results.json (key 'backtest').
 """
 import json
+import math
 from pathlib import Path
 
 import numpy as np
@@ -13,10 +14,27 @@ import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
 pred = pd.read_csv(ROOT / "data" / "predictions_scored.csv", parse_dates=["Date"])
-feat = pd.read_csv(ROOT / "data" / "features.csv")
+# Closing odds are keyed by the row position 02_models.py used as match_id, so
+# confirm that features.csv is still the file the predictions came from.
+feat = pd.read_csv(ROOT / "data" / "features.csv",
+                   usecols=["Date", "B365CH", "B365CD", "B365CA"], parse_dates=["Date"])
 feat["match_id"] = np.arange(len(feat))
+match_dates = pred.drop_duplicates("match_id").set_index("match_id")["Date"]
+if not feat.set_index("match_id")["Date"].reindex(match_dates.index).equals(match_dates):
+    raise ValueError("features.csv does not match predictions_scored.csv; rerun 02_models.py.")
 pred = pred.merge(feat[["match_id", "B365CH", "B365CD", "B365CA"]], on="match_id", how="left")
 rng = np.random.default_rng(42)
+
+
+def without_nan(obj):
+    """Replace non-finite floats with None so the saved JSON stays standard."""
+    if isinstance(obj, dict):
+        return {k: without_nan(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [without_nan(v) for v in obj]
+    if isinstance(obj, float) and not math.isfinite(obj):
+        return None
+    return obj
 
 ODDS = {"H": "B365H", "D": "B365D", "A": "B365A"}
 CODDS = {"H": "B365CH", "D": "B365CD", "A": "B365CA"}
@@ -111,7 +129,12 @@ for s in ["2020-21", "2024-25", "2025-26"]:
     print(f"Blind-away {s}: ROI {100*prof.mean():+.2f}% [{100*lo:.2f}, {100*hi:.2f}]")
 bt["blind_away_diagnostic"] = diag
 
+# Mean Bet365 overround on the test matches: the reference level for the ROI
+# figure (a bettor with no edge loses about the margin on average).
+bt["mean_overround_test"] = float(mk["overround"].mean())
+print(f"Mean overround on the {len(mk)} test matches: {100 * bt['mean_overround_test']:.2f}%")
+
 results["backtest"] = bt
 with open(ROOT / "output" / "results.json", "w") as f:
-    json.dump(results, f, indent=1)
+    json.dump(without_nan(results), f, indent=1, allow_nan=False)
 print("\nSaved backtest results")

@@ -4,6 +4,7 @@ calibration, regime breakdowns, and GBM feature importance.
 Writes output/results.json and output/tables/*.csv.
 """
 import json
+import math
 from pathlib import Path
 
 import numpy as np
@@ -16,6 +17,32 @@ OUT_T.mkdir(parents=True, exist_ok=True)
 pred = pd.read_csv(ROOT / "data" / "predictions.csv", parse_dates=["Date"])
 if pred.duplicated(["match_id", "model"]).any():
     raise ValueError("Duplicate model/match predictions would distort evaluation.")
+
+
+def without_nan(obj):
+    """Replace non-finite floats with None so the saved JSON stays standard."""
+    if isinstance(obj, dict):
+        return {k: without_nan(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [without_nan(v) for v in obj]
+    if isinstance(obj, float) and not math.isfinite(obj):
+        return None
+    return obj
+
+
+def read_feature_columns(columns):
+    """Per-match columns from features.csv, keyed by the match_id 02_models.py assigned.
+
+    The key is the row position, so the file must be the one 02_models.py read.
+    """
+    feat = pd.read_csv(ROOT / "data" / "features.csv", usecols=["Date", *columns],
+                       parse_dates=["Date"])
+    feat["match_id"] = np.arange(len(feat))
+    dates = pred.drop_duplicates("match_id").set_index("match_id")["Date"]
+    aligned = feat.set_index("match_id")["Date"].reindex(dates.index)
+    if not aligned.equals(dates):
+        raise ValueError("features.csv does not match predictions.csv; rerun 02_models.py.")
+    return feat[["match_id", *columns]]
 
 # ---------------- Crowd-period coding (same rule as the home-advantage study) ----------------
 GHOST_START = {"I1": "2020-03-04", "F1": "2020-03-04", "SP1": "2020-03-10",
@@ -56,7 +83,13 @@ by_season.to_csv(OUT_T / "t2_rps_by_season.csv")
 results["rps_by_season"] = json.loads(by_season.to_json(orient="index"))
 
 by_period = (pred.groupby(["model", "period"])["rps"].mean()
-             .unstack()[["pre", "ghost", "post"]].round(5))
+             .unstack()[["pre", "ghost", "post"]])
+# The blend starts a season later, so its cells cover a shorter sample. The
+# market restricted to the blend's matches gives the like-for-like row.
+bl_ids = set(pred.loc[pred["model"] == "blend", "match_id"])
+mk_sub = pred[(pred["model"] == "market") & (pred["match_id"].isin(bl_ids))]
+by_period.loc["market_blend_sample"] = mk_sub.groupby("period")["rps"].mean()
+by_period = by_period.round(5)
 by_period.to_csv(OUT_T / "t3_rps_by_period.csv")
 results["rps_by_period"] = json.loads(by_period.to_json(orient="index"))
 print("RPS by period:\n", by_period.to_string(), "\n")
@@ -140,26 +173,35 @@ print("Market implied vs realized home-win rate by period:",
            round(results[f'market_home_bias_{p}']['realized'], 4)) for p in ["pre", "ghost", "post"]})
 
 # Per-season market home bias with date-clustered bootstrap CI (ties to the
-# home-advantage study: did bookmakers track the 2024-25 collapse and the rebound?)
+# home-advantage study: did bookmakers track the 2024-25 fall and the rebound?)
+# The benchmark uses Shin probabilities (pH); proportional normalization
+# (mkt_H, the convention of the home-advantage study) is reported alongside
+# because Shin assigns slightly more probability to the usually favoured home
+# side, which shifts the measured bias by a few tenths of a point.
 rng = np.random.default_rng(42)
 
-def cluster_boot_mean(df_sub, col, B=2000):
-    by_date = df_sub.groupby("Date")[col].agg(["sum", "count"])
-    s, c = by_date["sum"].to_numpy(), by_date["count"].to_numpy()
-    draws = []
-    for _ in range(B):
+def cluster_boot_mean(df_sub, cols, B=2000):
+    """Bootstrap 95% interval of each column's mean, resampling match dates."""
+    by_date = df_sub.groupby("Date")
+    s, c = by_date[cols].sum().to_numpy(), by_date.size().to_numpy()
+    draws = np.empty((B, len(cols)))
+    for b in range(B):
         idx = rng.integers(0, len(s), len(s))
-        draws.append(s[idx].sum() / c[idx].sum())
-    return np.quantile(draws, 0.025), np.quantile(draws, 0.975)
+        draws[b] = s[idx].sum(axis=0) / c[idx].sum()
+    return np.quantile(draws, [0.025, 0.975], axis=0)
 
 bias_rows = []
 for s in sorted(g["season"].unique()):
     sub = g[g["season"] == s].copy()
     sub["diff"] = (sub["y"] == 0).astype(float) - sub["pH"]
-    lo, hi = cluster_boot_mean(sub, "diff")
+    sub["diff_basic"] = (sub["y"] == 0).astype(float) - sub["mkt_H"]
+    (lo, lo_b), (hi, hi_b) = cluster_boot_mean(sub, ["diff", "diff_basic"])
     bias_rows.append({"season": s, "implied": sub["pH"].mean(),
                       "realized": (sub["y"] == 0).mean(),
                       "bias": sub["diff"].mean(), "ci_lo": lo, "ci_hi": hi,
+                      "implied_basic": sub["mkt_H"].mean(),
+                      "bias_basic": sub["diff_basic"].mean(),
+                      "ci_lo_basic": lo_b, "ci_hi_basic": hi_b,
                       "n": len(sub)})
 bias_t = pd.DataFrame(bias_rows).round(4)
 bias_t.to_csv(OUT_T / "t5_market_bias_by_season.csv", index=False)
@@ -168,8 +210,6 @@ print("\nMarket home-win bias by season (realized - implied, 95% CI):")
 print(bias_t.to_string(index=False))
 
 # Like-for-like: market metrics restricted to the blend's evaluation sample
-bl_ids = set(pred.loc[pred["model"] == "blend", "match_id"])
-mk_sub = pred[(pred["model"] == "market") & (pred["match_id"].isin(bl_ids))]
 results["market_on_blend_sample"] = json.loads(metrics(mk_sub).round(5).to_json())
 print("\nMarket on blend sample:", results["market_on_blend_sample"])
 
@@ -187,9 +227,7 @@ results["demargin_robustness"] = {
     "basic_rps": rps_of(["mkt_H", "mkt_D", "mkt_A"], mk),
 }
 # Closing comparison: Shin de-margining applied to BOTH legs (apples to apples)
-feat_odds = pd.read_csv(ROOT / "data" / "features.csv",
-                        usecols=["B365CH", "B365CD", "B365CA"])
-feat_odds["match_id"] = np.arange(len(feat_odds))
+feat_odds = read_feature_columns(["B365CH", "B365CD", "B365CA"])
 mk2 = mk.merge(feat_odds, on="match_id", how="left")
 mc = mk2[mk2["B365CH"].notna()].copy()
 from scipy.optimize import brentq
@@ -276,5 +314,5 @@ print(imp_t.head(10).to_string(index=False))
 
 pred.to_csv(ROOT / "data" / "predictions_scored.csv", index=False)
 with open(ROOT / "output" / "results.json", "w") as f:
-    json.dump(results, f, indent=1)
+    json.dump(without_nan(results), f, indent=1, allow_nan=False)
 print("\nSaved output/results.json")

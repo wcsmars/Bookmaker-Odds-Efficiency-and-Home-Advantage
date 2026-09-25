@@ -22,7 +22,11 @@ C = {"market": "black", "blend": "#4C72B0", "gbm": "#DD8452",
      "logit": "#55A868", "dpois": "#8172B3", "elo": "#937860"}
 SEASONS = ["2017-18", "2018-19", "2019-20", "2020-21", "2021-22",
            "2022-23", "2023-24", "2024-25", "2025-26"]
-GHOST_X = (2.6, 3.45)  # 2019-20 tail + 2020-21 on the season index axis
+GHOST_X = (2.6, 3.45)  # brackets the 2020-21 marker on the season index axis;
+                       # the 2019-20 marker also covers closed-stadium matches
+# Earliest league closure (Serie A and Ligue 1) to the end of the policy window.
+GHOST_DATES = (pd.Timestamp("2020-03-04"), pd.Timestamp("2021-06-30"))
+LABELS = {"dpois": "double-Poisson", "blend": "blend (2018-19 on)"}
 
 
 def shade(ax):
@@ -38,7 +42,7 @@ ax = axes[0]
 for mdl in ["market", "logit", "gbm", "dpois", "blend"]:
     v = [rps[mdl].get(s) for s in SEASONS]
     ax.plot(x, v, marker="o", ms=4, lw=1.6 if mdl in ("market", "blend") else 1.1,
-            color=C[mdl], label={"dpois": "double-Poisson"}.get(mdl, mdl),
+            color=C[mdl], label=LABELS.get(mdl, mdl),
             ls="-" if mdl != "market" else "--")
 shade(ax)
 ax.set_ylabel("Mean RPS (lower = better)")
@@ -104,7 +108,7 @@ imp = pd.read_csv(ROOT / "output" / "tables" / "t4_permutation_importance.csv").
 fig, ax = plt.subplots(figsize=(7.0, 4.0))
 ax.barh(imp["feature"][::-1], imp["importance"][::-1],
         xerr=imp["std"][::-1], color="#DD8452", alpha=0.85)
-ax.set_xlabel("Permutation importance (Δ log-loss, held-out 2025-26)")
+ax.set_xlabel("Permutation importance (Δ log-loss, held-out 2025-26; bars: SD over 5 shuffles)")
 ax.set_title("Elo difference has the largest GBM permutation importance")
 fig.tight_layout()
 fig.savefig(FIG / "fig4_importance.png", bbox_inches="tight")
@@ -123,10 +127,11 @@ for mdl in ["logit", "gbm", "dpois", "blend"]:
                 yerr=[[100 * (q["roi"] - q["ci_lo"]) for q in r],
                       [100 * (q["ci_hi"] - q["roi"]) for q in r]],
                 fmt="o", ms=4, capsize=3, color=C[mdl],
-                label={"dpois": "double-Poisson"}.get(mdl, mdl))
+                label=LABELS.get(mdl, mdl))
 ax.axhline(0, color="black", lw=1.0, ls="--")
-ax.axhline(-5.17, color="grey", lw=0.9, ls=":")
-ax.text(0.075, -4.6, "− overround", fontsize=8, color="grey")
+overround = 100 * bt["mean_overround_test"]
+ax.axhline(-overround, color="grey", lw=0.9, ls=":",
+           label=f"− mean overround ({overround:.2f}%)")
 ax.set_xlabel("Value threshold θ")
 ax.set_ylabel("ROI, % (flat stakes)")
 ax.set_title("(a) Backtest ROI at Bet365 odds, 95% CI")
@@ -145,8 +150,7 @@ prof = pd.concat(prof).sort_values("Date")
 cum = prof.groupby("Date")["profit"].sum().cumsum()
 ax.plot(cum.index, cum.values, color="#DD8452", lw=1.4)
 ax.axhline(0, color="black", lw=1.0, ls="--")
-ax.axvspan(pd.Timestamp("2020-03-08"), pd.Timestamp("2021-06-30"),
-           color="#C44E52", alpha=0.10, lw=0)
+ax.axvspan(*GHOST_DATES, color="#C44E52", alpha=0.10, lw=0)
 ax.set_ylabel("Cumulative units (GBM, θ=0.05)")
 ax.set_title("(b) Cumulative realized profit")
 fig.tight_layout()

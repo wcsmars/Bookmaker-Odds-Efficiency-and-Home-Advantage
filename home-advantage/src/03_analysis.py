@@ -10,7 +10,8 @@ advantage) plus crowd-period dummies. Because the strengths are sign-coded,
 period dummies remain identified even in seasons played entirely without
 crowds. Estimation by Frisch-Waugh-Lovell: the FE block is partialled out of
 (y, d) with sparse least squares, then OLS on residualized variables with
-league-season cluster-robust standard errors.
+league-season cluster-robust standard errors. Single-season and single-league
+specifications cluster by league matchday instead (see fe_reg).
 """
 import json
 from pathlib import Path
@@ -27,6 +28,10 @@ OUT_T.mkdir(parents=True, exist_ok=True)
 
 m = pd.read_csv(ROOT / "data" / "processed" / "matches.csv", parse_dates=["Date"])
 m["season_short"] = m["season"].str.replace("20", "", 1)
+# League matchday (league x calendar date): the clustering unit when league-season
+# clusters are too few. Home/away team-season clusters coincide with the absorbed
+# strength effects and understate uncertainty in this paired design.
+m["matchday"] = m["Div"] + "_" + m["Date"].dt.strftime("%Y-%m-%d")
 
 # Post-period season dummies for the recovery analysis
 for s in ["2021-22", "2022-23", "2023-24", "2024-25", "2025-26"]:
@@ -66,31 +71,27 @@ def fe_reg(df, y, dvars, cluster="league_season", contrast=None):
     reghdfe's default, which exempts FEs nested within clusters); inference
     uses t(G-1) where G = #clusters. If the requested cluster variable has
     fewer than 10 groups (e.g. the single-season spec), clustering falls back
-    to the home team-season (a one-way approximation; see fe_reg_twoway).
+    to the league matchday. Team-season clusters are avoided: with sign-coded
+    team-season strengths, their score sums largely cancel and understate the
+    sampling variance.
     `contrast=(a, b)` additionally tests H0: beta_a = beta_b.
     """
     from scipy import stats as st
 
     sub = df.dropna(subset=[y]).copy()
     if sub[cluster].nunique() < 10:
-        cluster = "home_ts"
-    F = strength_block(sub)
+        cluster = "matchday"
     names = ["home_adv_const"] + dvars
-    D = np.column_stack([np.ones(len(sub))] + [sub[v].values.astype(float) for v in dvars])
-    yv = sub[y].values.astype(float)
-
-    M = np.column_stack([yv, D])
-    R = np.empty_like(M)
-    for j in range(M.shape[1]):
-        sol = lsqr(F, M[:, j], atol=1e-12, btol=1e-12, iter_lim=50000)[0]
-        R[:, j] = M[:, j] - F @ sol
-    y_t, D_t = R[:, 0], R[:, 1:]
+    y_t, D_t = _fwl(sub, y, dvars)
 
     res = sm.OLS(y_t, D_t).fit(
         cov_type="cluster", cov_kwds={"groups": sub[cluster]}, use_t=True
     )
-    n, k_d = len(sub), D.shape[1]
-    k_fe = F.shape[1] - sub["league_season"].nunique()  # rank of FE block
+    n, k_d = len(sub), D_t.shape[1]
+    # Rank of the FE block: one strength parameter per team-season, less one
+    # normalization per league-season (each league-season is connected).
+    n_team_seasons = len(set(sub["home_ts"]) | set(sub["away_ts"]))
+    k_fe = n_team_seasons - sub["league_season"].nunique()
     dof_factor = np.sqrt((n - k_d) / (n - k_d - k_fe))
     G = sub[cluster].nunique()
     tcrit = st.t.ppf(0.975, G - 1)
@@ -138,8 +139,6 @@ def wild_cluster_p(df, y, dvars, target, cluster="league_season", B=999, seed=20
     coefficient. Used for pooled specifications with few treated clusters.
     FE are nested within the bootstrap clusters, so the FWL-residualized
     system can be bootstrapped directly (Roodman et al. 2019 convention)."""
-    from scipy import stats as st
-
     sub = df.dropna(subset=[y]).copy()
     y_t, D_t = _fwl(sub, y, dvars)
     names = ["home_adv_const"] + dvars
@@ -174,54 +173,10 @@ def wild_cluster_p(df, y, dvars, target, cluster="league_season", B=999, seed=20
     return float((hits + 1) / (B + 1))
 
 
-def fe_reg_twoway(df, y, dvars):
-    """Cameron-Gelbach-Miller two-way clustering on home and away team-season
-    (for the single-season spec, where league-season clustering is infeasible).
-    V = V_home + V_away - V_pair; inference uses t(min(G)-1) and the same
-    conservative absorbed-FE dof factor as fe_reg."""
-    from scipy import stats as st
-
-    sub = df.dropna(subset=[y]).copy()
-    y_t, D_t = _fwl(sub, y, dvars)
-    names = ["home_adv_const"] + dvars
-
-    def cluster_V(groups):
-        gids = pd.factorize(groups)[0]
-        beta, *_ = np.linalg.lstsq(D_t, y_t, rcond=None)
-        u = y_t - D_t @ beta
-        XtXi = np.linalg.inv(D_t.T @ D_t)
-        meat = np.zeros((D_t.shape[1], D_t.shape[1]))
-        for g in range(gids.max() + 1):
-            sg = D_t[gids == g].T @ u[gids == g]
-            meat += np.outer(sg, sg)
-        return XtXi @ meat @ XtXi
-
-    pair = sub["home_ts"] + "|" + sub["away_ts"]
-    V = cluster_V(sub["home_ts"]) + cluster_V(sub["away_ts"]) - cluster_V(pair)
-    # CGM eigenvalue fix for possible non-PSD combination
-    eigval, eigvec = np.linalg.eigh(V)
-    V = eigvec @ np.diag(np.clip(eigval, 0, None)) @ eigvec.T
-
-    n, k_d = len(sub), D_t.shape[1]
-    k_fe = strength_block(sub).shape[1] - sub["league_season"].nunique()
-    dof_factor = np.sqrt((n - k_d) / (n - k_d - k_fe))
-    G = min(sub["home_ts"].nunique(), sub["away_ts"].nunique())
-    beta, *_ = np.linalg.lstsq(D_t, y_t, rcond=None)
-    out = {}
-    for i, nm in enumerate(names):
-        se = float(np.sqrt(V[i, i])) * dof_factor
-        coef = float(beta[i])
-        out[nm] = {
-            "coef": coef, "se": se,
-            "p": float(2 * st.t.sf(abs(coef / se), G - 1)),
-        }
-    return {"n": int(n), "n_clusters": int(G), "coefs": out}
-
-
-def run_spec(df, dvars, outcomes, label):
+def run_spec(df, dvars, outcomes, label, cluster="league_season"):
     res = {}
     for y in outcomes:
-        res[y] = fe_reg(df, y, dvars)
+        res[y] = fe_reg(df, y, dvars, cluster=cluster)
     print(f"  spec '{label}' done ({len(outcomes)} outcomes)")
     return res
 
@@ -294,16 +249,12 @@ results["strict"] = run_spec(
     ["margin", "points_diff", "home_win", "yellow_diff", "foul_diff"], "strict",
 )
 
-print("Within 2019-20 spec (cleanest within-season identification)")
+print("Within 2019-20 spec (cleanest within-season identification; matchday clusters)")
 s1920 = m[m["season"] == "2019-20"]
 results["s1920"] = run_spec(
     s1920, ["ghost"], ["margin", "points_diff", "home_win", "yellow_diff", "foul_diff"], "s1920",
+    cluster="matchday",
 )
-print("  ... with CGM two-way clustering (home x away team-season)")
-results["s1920_twoway"] = {
-    y: fe_reg_twoway(s1920, y, ["ghost"])
-    for y in ["margin", "home_win", "yellow_diff"]
-}
 
 print("Placebo: fake ghost window 2017-03-04..2018-06-30, pre-COVID data only")
 pre = m[m["period"] == "pre"].copy()
@@ -312,13 +263,13 @@ results["placebo"] = run_spec(
     pre, ["fake_ghost"], ["margin", "points_diff", "home_win", "yellow_diff", "foul_diff"], "placebo",
 )
 
-print("League-by-league main spec (CGM two-way team-season clustering: within a")
-print("single league the ghost period spans only ~2 league-seasons, so league-")
-print("season clustering has too few treated clusters for reliable inference)")
+print("League-by-league main spec (league-matchday clustering: within a single")
+print("league the ghost period spans only ~2 league-seasons, so league-season")
+print("clustering has too few treated clusters for reliable inference)")
 results["by_league"] = {}
 for div, sub in m.groupby("league"):
     results["by_league"][div] = {
-        y: fe_reg_twoway(sub, y, ["ghost", "post"])
+        y: fe_reg(sub, y, ["ghost", "post"], cluster="matchday")
         for y in ["margin", "home_win", "yellow_diff"]
     }
     g = results["by_league"][div]["margin"]["coefs"]["ghost"]
@@ -371,7 +322,7 @@ fmt_table(results["recovery"], ["ghost"] + POST_DUMMIES,
 print("=== Table 4: robustness ===")
 fmt_table(results["strict"], ["ghost_strict", "ghost_loose", "post"],
           ["margin", "home_win", "yellow_diff"], "table4_strict")
-fmt_table(results["s1920_twoway"], ["ghost"], ["margin", "home_win", "yellow_diff"], "table4_s1920")
+fmt_table(results["s1920"], ["ghost"], ["margin", "home_win", "yellow_diff"], "table4_s1920")
 fmt_table(results["placebo"], ["fake_ghost"], ["margin", "home_win", "yellow_diff"], "table4_placebo")
 
 # Traceable sample counts and the pre-pandemic linear trend in home advantage

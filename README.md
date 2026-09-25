@@ -14,7 +14,7 @@ benchmarking and cautious interpretation of observational evidence.
 
 | Study | Sample | Main result |
 | --- | --- | --- |
-| [Forecasting and market comparison](forecasting/README.md) | 21,583 source matches; 16,106 out-of-sample matches across nine seasons | Market RPS **0.19511**, versus **0.20007** for multinomial logistic regression and **0.20200** for gradient boosting. Lower is better. |
+| [Forecasting and market comparison](forecasting/README.md) | 21,583 matches with complete Bet365 odds; 16,106 out-of-sample matches across nine seasons | Market RPS **0.19511**, versus **0.20007** for multinomial logistic regression and **0.20200** for gradient boosting. Lower is better. |
 | [Home advantage and closed stadiums](home-advantage/README.md) | 21,589 matches, 2014–15 through 2025–26 | Adjusted closed-period home goal-margin difference **−0.198 goals** and home-win probability difference **−5.1 percentage points**. |
 
 The forecasting study compares four public-match-data models, a market benchmark
@@ -39,7 +39,7 @@ the causal effect of crowd noise or establish referee bias.
 | --- | --- | --- |
 | Hypothesis | Public match records might add information that bookmaker prices miss, especially when home advantage shifts. | [forecasting README](forecasting/README.md) |
 | Data | 60 league-season files from Football-Data: results, match statistics and Bet365 odds for the Big-5 leagues, 2014–15 to 2025–26. | [DATA_SOURCES.md](DATA_SOURCES.md) |
-| Signal | Sequential Elo, rolling form, shots, corners, venue form and rest days, each computed only from earlier matches. Odds never enter the standalone models. | [`01_features.py`](forecasting/src/01_features.py) |
+| Signal | Sequential Elo, rolling form, shots on target, corners, venue form and rest days, each computed only from earlier matches. Odds never enter the standalone models. | [`01_features.py`](forecasting/src/01_features.py) |
 | Models | Elo-only logit, full-feature logit, gradient boosting and a double-Poisson goal model, refit each season on earlier seasons only. The market benchmark is Bet365 odds de-margined with Shin's method; the blend stacks gradient boosting with the market. | [`02_models.py`](forecasting/src/02_models.py) |
 | Bet selection | Flat one-unit stake on any outcome where model probability × decimal odds exceeds 1 + θ, for θ ∈ {0, 0.02, 0.05, 0.10}. | [`04_backtest.py`](forecasting/src/04_backtest.py) |
 | Execution assumptions | Bets settle at the stored Bet365 pre-closing price. There are no limits, slippage or fees, and no quote timestamps to confirm the price was available. | [`04_backtest.py`](forecasting/src/04_backtest.py) |
@@ -68,9 +68,19 @@ python -m unittest discover -s tests
 On Windows, activate with `.venv\Scripts\Activate.ps1` in PowerShell.
 The release check and the unit tests use only Python's standard library, so they
 run before the research dependencies are installed and without the source data.
-They check saved aggregate consistency, reported sample sizes, table alignment,
-source-manifest completeness, local documentation links and the pipeline
-runner's input handling. They do not refit models or replace statistical review.
+They check that every saved CSV table agrees with its result JSON, that all nine
+figures exist, that the headline numbers in the READMEs match the saved results,
+the reported sample sizes, the source manifest, local documentation links and the
+pipeline runner's input handling. They do not refit models or replace
+statistical review.
+
+With the research dependencies installed, a smoke test runs both studies end to
+end on synthetic Football-Data-style inputs in a temporary copy, leaving the
+included outputs untouched (about two minutes):
+
+```sh
+python tests/smoke_pipeline.py
+```
 
 ## Reproduce the studies
 
@@ -133,7 +143,7 @@ forecasting/               Model pipeline, aggregate tables and figures
 home-advantage/            Panel analysis, aggregate tables and figures
 data/source_manifest.json  Input URLs and historical file fingerprints
 scripts/                   Pipeline runner and offline release checks
-tests/                     Standard-library unit tests for the release checks and runner
+tests/                     Unit tests, synthetic-input generator and pipeline smoke test
 docs/                      Release validation record
 requirements.txt           Research dependencies for Python 3.11
 ```

@@ -1,26 +1,44 @@
+# Python environments, caches and build output
 .venv/
 venv/
+*venv*/
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
 .cache/
+build/
+dist/
+*.log
+# Notebooks and editor or assistant tool configuration
+*.ipynb
+.ipynb_checkpoints/
+.idea/
+.vscode/
+.cursor/
+.claude/
+.codex/
+.agents/
+.public-maintenance/
+CLAUDE.md
+AGENTS.md
+# Operating-system files
 .DS_Store
 ._*
-node_modules/
+Thumbs.db
+# Secrets and local configuration
 .env
 .env.*
 *.pem
 *.key
-.idea/
-.vscode/
-*.log
-build/
-dist/
 config.yaml
 credentials/
 private/
-data/raw/
 # Third-party inputs and large per-match intermediates stay local.
+data/raw/
+data/processed/
 home-advantage/data/
 forecasting/data/
 # Local documents and build tooling
@@ -32,6 +50,7 @@ deck/
 *.pdf
 *.tex
 *.bib
+*.xlsx
 docs/REPORTS.md
 docs/PORTFOLIO.md
 scripts/build_reports.py

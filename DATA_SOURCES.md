@@ -57,7 +57,8 @@ where available. See the provider's
 [column notes](https://www.football-data.co.uk/notes.txt).
 
 The home-advantage sample has 21,589 matches. Requiring complete Bet365 odds
-leaves 21,583 forecasting feature rows. The initial three seasons are used for
+leaves 21,583 forecasting feature rows; the six matches without a complete
+price still update Elo ratings and rolling form. The initial three seasons are used for
 training, leaving 16,106 out-of-sample matches across nine test seasons. The
 blend starts a season later and covers 14,280 matches. Scores for the blend
 must be compared with the market on that same sample.

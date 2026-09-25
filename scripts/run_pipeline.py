@@ -21,7 +21,7 @@ STEPS = {
 
 
 def check_inputs(require_snapshot: bool) -> None:
-    manifest = json.loads((ROOT / "data/source_manifest.json").read_text())
+    manifest = json.loads((ROOT / "data/source_manifest.json").read_text(encoding="utf-8"))
     raw = ROOT / "home-advantage/data/raw"
     missing, changed = [], []
     for item in manifest["files"]:

@@ -21,7 +21,8 @@ plt.rcParams.update({
     "axes.spines.top": False, "axes.spines.right": False,
     "axes.grid": True, "grid.alpha": 0.25, "grid.linewidth": 0.5,
 })
-GHOST_SPAN = (pd.Timestamp("2020-03-08"), pd.Timestamp("2021-06-30"))
+# Earliest league closure (Serie A and Ligue 1) to the end of the policy window.
+GHOST_SPAN = (pd.Timestamp("2020-03-04"), pd.Timestamp("2021-06-30"))
 C_PRE, C_GHOST, C_POST = "#4C72B0", "#C44E52", "#55A868"
 LEAGUE_COLORS = {
     "Premier League": "#4C72B0", "La Liga": "#DD8452", "Serie A": "#55A868",
@@ -56,7 +57,7 @@ ax.xaxis.set_major_locator(mdates.YearLocator())
 ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y"))
 ax.annotate("ghost games", xy=(pd.Timestamp("2020-09-15"), ax.get_ylim()[1] * 0.9),
             color="#C44E52", fontsize=9, ha="center")
-fig.suptitle("Home advantage collapsed when stadiums closed", y=0.995, fontsize=12)
+fig.suptitle("Home advantage fell during the closed-stadium period", y=0.995, fontsize=12)
 fig.tight_layout()
 fig.savefig(FIG / "fig1_rolling.png", bbox_inches="tight")
 plt.close(fig)
@@ -72,13 +73,15 @@ for lg, sub in m.groupby("league"):
 pooled = m.groupby("season")["margin"].mean().reindex(seasons)
 ax.plot(x, pooled.values, marker="o", ms=5, lw=2.6, color="black", label="Big-5 pooled")
 ax.axhline(0, color="black", lw=0.8)
-ax.axvspan(5.6, 6.45, color="#C44E52", alpha=0.12, lw=0)
-ax.text(6.02, 0.535, "closed\nstadiums", color="#C44E52", ha="center",
-        va="top", fontsize=8)
+ghost_i = seasons.index("2020-21")
+ax.axvspan(ghost_i - 0.4, ghost_i + 0.45, color="#C44E52", alpha=0.12, lw=0)
+ax.text(ghost_i, 0.97, "closed\nstadiums", color="#C44E52", ha="center", va="top",
+        fontsize=8, transform=ax.get_xaxis_transform())
 ax.set_xticks(x, [s.replace("20", "", 1) for s in seasons], rotation=0)
 ax.set_ylabel("Mean goal margin, home − away")
 ax.set_title(f"Season-level home advantage by league, {seasons[0]} to {seasons[-1]}")
-ax.set_ylim(top=0.55)
+top = max(0.55, float(m.groupby(["league", "season"])["margin"].mean().max()) + 0.03)
+ax.set_ylim(top=top)
 ax.legend(ncol=2, fontsize=8, frameon=False, loc="lower left")
 fig.tight_layout()
 fig.savefig(FIG / "fig2_seasons.png", bbox_inches="tight")
@@ -128,8 +131,8 @@ for ax, (var, ttl) in zip(axes, [
     ax.set_xticks(xb, [l.replace(" ", "\n") for l in by.index], fontsize=8)
     ax.set_title(ttl, fontsize=10)
 axes[0].legend(fontsize=8, frameon=False)
-fig.suptitle("Card and foul differentials narrowed during the closed-stadium period",
-             fontsize=11)
+fig.suptitle("Away-minus-home card and foul differentials fell during the closed-stadium "
+             "period (unadjusted league means)", fontsize=11)
 fig.tight_layout()
 fig.savefig(FIG / "fig3_referee.png", bbox_inches="tight")
 plt.close(fig)
