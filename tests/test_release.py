@@ -109,6 +109,25 @@ class ChecksDetectCorruption(unittest.TestCase):
         with self.assertRaisesRegex(check_release.CheckFailure, "fig3_market_bias"):
             check_release.check_figures(self.root)
 
+    def test_invalid_importance_row_is_caught(self):
+        self.edit_csv("forecasting/output/tables/t4_permutation_importance.csv", 20, "std", "nan")
+        with self.assertRaisesRegex(check_release.CheckFailure, "t4"):
+            check_release.check_forecast_tables(self.root)
+
+    def test_negative_contrast_standard_error_is_caught(self):
+        path = self.root / "home-advantage/output/results.json"
+        result = json.loads(path.read_text(encoding="utf-8"))
+        result["recovery"]["margin"]["contrast"]["se"] = -0.5
+        path.write_text(json.dumps(result), encoding="utf-8")
+        with self.assertRaisesRegex(check_release.CheckFailure, "contrast: standard error"):
+            check_release.check_home_tables(self.root)
+
+    def test_truncated_figure_is_caught(self):
+        path = self.root / "home-advantage/output/figures/fig2_seasons.png"
+        path.write_bytes(path.read_bytes()[:64])
+        with self.assertRaisesRegex(check_release.CheckFailure, "fig2_seasons"):
+            check_release.check_figures(self.root)
+
     def test_manifest_url_must_match_file(self):
         path = self.root / "data/source_manifest.json"
         manifest = json.loads(path.read_text(encoding="utf-8"))
@@ -180,6 +199,54 @@ class ReportedClaims(unittest.TestCase):
             self.assertLess(bias[season]["ci_hi"], 0, season)
         clv = self.forecast["backtest"]["gbm"]["clv"]
         self.assertIn(f"+{100 * clv['mean_clv']:.2f}% on {clv['n']:,} selected bets", self.forecast_readme)
+
+    def test_readme_forecast_inference_claims_match_results(self):
+        """Model-dependent statements in the forecasting README follow the saved tests."""
+        f, text = self.forecast, self.forecast_readme
+        pooled = f["pooled"]
+        standalone = {m: pooled[m]["rps"] for m in STANDALONE_MODELS}
+        self.assertEqual(min(standalone, key=standalone.get), "logit",
+                         "README calls the full-feature logit the best standalone model")
+        self.assertIn("Best standalone model: full-feature logit", text)
+        self.assertGreater(pooled["gbm"]["rps"], pooled["logit"]["rps"],
+                           "README says gradient boosting is worse than the logit")
+        logit = f["dm_logit_vs_market"]
+        self.assertIn(f"gap +{logit['mean_gap']:.5f}, date-clustered t = {logit['t']:.1f}", text)
+        blend = f["dm_blend_vs_market"]
+        self.assertGreater(blend["mean_gap"], 0, "README says the blend is worse than the market")
+        self.assertIn(f"gap +{blend['mean_gap']:.5f} (blend worse), unadjusted p = {blend['p']:.3f}", text)
+
+        gaps = f["blend_gap_by_season"]
+        favourable = sorted(s for s, g in gaps.items() if g["mean_gap"] < 0)
+        self.assertTrue(all(gaps[s]["p"] >= 0.05 for s in favourable),
+                        "README says no season shows a significant blend improvement")
+        words = dict(enumerate(("no", "one", "two", "three", "four", "five", "six", "seven", "eight")))
+        self.assertIn(f"small favorable point estimates in {words[len(favourable)]} seasons", text)
+        deficits = sorted(s for s, g in gaps.items() if g["mean_gap"] > 0 and g["p"] < 0.05)
+        label = lambda s: s.replace("-", "–")  # README writes seasons with an en dash
+        if deficits:
+            seasons = " and ".join(label(s) for s in deficits)
+            p_values = " and ".join(f"{gaps[s]['p']:.3f}" for s in deficits)
+            noun, verb = ("deficits", "are") if len(deficits) > 1 else ("deficit", "is")
+            self.assertIn(f"its {noun} in {seasons} {verb} nominally significant "
+                          f"(unadjusted p = {p_values})", text)
+        else:
+            self.assertNotIn("nominally significant", text)
+
+        cells = [entry for model in ("logit", "gbm", "dpois", "blend")
+                 for key, entry in f["backtest"][model].items() if key.startswith("theta_")]
+        self.assertTrue(any(c["ci_hi"] > 0 for c in cells),
+                        "README says some ROI confidence intervals include zero")
+
+        bias = {row["season"]: row for row in f["market_bias_by_season"]}
+        basic = {round(100 * bias[s]["bias_basic"], 1) for s in ("2020-21", "2024-25")}
+        self.assertEqual(len(basic), 1, "README gives one proportional-normalization value for both seasons")
+        self.assertIn(f"about {MINUS}{-basic.pop():.1f} pp in both seasons with proportional "
+                      "normalization", text)
+        shift = sum(r["implied"] - r["implied_basic"] for r in bias.values()) / len(bias)
+        self.assertIn(f"about {100 * shift:.1f} percentage points more probability", text)
+        pre = [-100 * bias[s]["bias"] for s in ("2017-18", "2018-19", "2019-20")]
+        self.assertIn(f"Shin biases of {MINUS}{min(pre):.1f} to {MINUS}{max(pre):.1f} pp", text)
 
     def test_readme_home_advantage_numbers_match_results(self):
         main = self.home["main"]

@@ -30,17 +30,21 @@ def without_nan(obj):
     return obj
 
 
+MATCH_KEY = ["Date", "Div", "y", "B365H", "B365D", "B365A"]
+
+
 def read_feature_columns(columns):
     """Per-match columns from features.csv, keyed by the match_id 02_models.py assigned.
 
-    The key is the row position, so the file must be the one 02_models.py read.
+    The key is the row position, so each predicted match must still have the
+    same date, league, result and prices at that position.
     """
-    feat = pd.read_csv(ROOT / "data" / "features.csv", usecols=["Date", *columns],
+    feat = pd.read_csv(ROOT / "data" / "features.csv", usecols=[*MATCH_KEY, *columns],
                        parse_dates=["Date"])
     feat["match_id"] = np.arange(len(feat))
-    dates = pred.drop_duplicates("match_id").set_index("match_id")["Date"]
-    aligned = feat.set_index("match_id")["Date"].reindex(dates.index)
-    if not aligned.equals(dates):
+    expected = pred.drop_duplicates("match_id").set_index("match_id")[MATCH_KEY]
+    aligned = feat.set_index("match_id")[MATCH_KEY].reindex(expected.index)
+    if not aligned.equals(expected):
         raise ValueError("features.csv does not match predictions.csv; rerun 02_models.py.")
     return feat[["match_id", *columns]]
 

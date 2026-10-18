@@ -27,6 +27,42 @@ COPIED = ("forecasting/src", "home-advantage/src", "scripts", "data", "tests")
 IGNORED = shutil.ignore_patterns("__pycache__", "*.pyc")
 
 
+def publishable_files():
+    """Tracked plus untracked-but-not-ignored files, or None outside a git checkout.
+
+    Copying only these keeps private, git-ignored notes in a working folder out
+    of the smoke copy, so they cannot affect its documentation check.
+    """
+    try:
+        listing = subprocess.run(
+            ["git", "-C", str(ROOT), "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+            capture_output=True, check=True).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    files = [ROOT / p for p in listing.decode("utf-8").split("\0") if p]
+    return [f for f in files if f.is_file()] or None
+
+
+def make_copy(copy: Path) -> None:
+    files = publishable_files()
+    if files is None:
+        for item in COPIED:
+            shutil.copytree(ROOT / item, copy / item, ignore=IGNORED)
+        for top in ROOT.iterdir():
+            if top.is_file() and not top.name.startswith("."):
+                shutil.copy(top, copy / top.name)
+        (copy / "docs").mkdir()
+        for doc in (ROOT / "docs").glob("*.md"):
+            shutil.copy(doc, copy / "docs" / doc.name)
+        for project in ("forecasting", "home-advantage"):
+            shutil.copy(ROOT / project / "README.md", copy / project / "README.md")
+        return
+    for source in files:
+        target = copy / source.relative_to(ROOT)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(source, target)
+
+
 def load(name: str):
     spec = importlib.util.spec_from_file_location(name, ROOT / "tests" / f"{name}.py"
                                                   if name != "check_release"
@@ -45,17 +81,7 @@ def main() -> None:
     tmp = Path(tempfile.mkdtemp(prefix="smoke run "))
     copy = tmp / "repo copy"
     try:
-        for item in COPIED:
-            shutil.copytree(ROOT / item, copy / item, ignore=IGNORED)
-        for top in ROOT.iterdir():
-            if top.is_file() and not top.name.startswith("."):
-                shutil.copy(top, copy / top.name)
-        (copy / "docs").mkdir()
-        for doc in (ROOT / "docs").glob("*.md"):
-            shutil.copy(doc, copy / "docs" / doc.name)
-        for project in ("forecasting", "home-advantage"):
-            shutil.copy(ROOT / project / "README.md", copy / project / "README.md")
-
+        make_copy(copy)
         make_inputs = load("make_synthetic_inputs")
         raw = copy / "home-advantage/data/raw"
         n = make_inputs.write_inputs(raw, args.seed)
@@ -67,7 +93,7 @@ def main() -> None:
         print(f"\nPipeline finished in {time.monotonic() - start:.0f} seconds.")
 
         check = load("check_release")
-        check.check_consistency(copy)
+        check.check_consistency(copy, release=False)
         forecast = check.load_json(copy / "forecasting/output/results.json")
         home = check.load_json(copy / "home-advantage/output/results.json")
         print(json.dumps({

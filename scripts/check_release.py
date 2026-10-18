@@ -45,6 +45,15 @@ OUTCOME_LABELS = {
     "corner_diff": "Corners (H-A)",
 }
 POST_DUMMIES = ("post_2122", "post_2223", "post_2324", "post_2425", "post_2526")
+# Gradient-boosting inputs (forecasting/src/02_models.py), the rows of t4
+GBM_FEATURES = ("d_ppg5", "d_ppg10", "d_gf5", "d_ga5", "d_sotf5", "d_sota5", "d_cor5",
+                "d_vppg", "d_vgd", "d_rest", "d_played", "elo_home", "elo_away", "elo_diff",
+                "h_ppg5", "a_ppg5", "h_vppg", "a_vppg", "h_hist_n", "a_hist_n",
+                *(f"lg_{league}" for league in LEAGUES))
+# Text that must never reach a published Markdown file. The last marker flags a
+# documentation step that only a rerun on the real source data can complete.
+FORBIDDEN_TEXT = ("[Author Name]", "/Users/")
+PENDING_MARKER = "REGENERATION PENDING"
 COEF_TABLES = {
     "table2_main": ("main", ("ghost", "post"), tuple(OUTCOME_LABELS)),
     "table3_recovery": ("recovery", ("ghost", *POST_DUMMIES),
@@ -93,6 +102,28 @@ def stars(p: float) -> str:
     return "***" if p < 0.01 else "**" if p < 0.05 else "*" if p < 0.1 else ""
 
 
+def check_values(node, path: str, allowed_null=frozenset()) -> None:
+    """Every number in a result file is finite, nulls appear only where expected,
+    every standard error is positive, every p-value lies in [0, 1] and every
+    confidence interval contains its estimate."""
+    if node is None:
+        require(path in allowed_null, f"{path}: unexpected null value")
+    elif isinstance(node, float):
+        require(math.isfinite(node), f"{path}: non-finite value")
+    elif isinstance(node, list):
+        for i, value in enumerate(node):
+            check_values(value, f"{path}[{i}]", allowed_null)
+    elif isinstance(node, dict):
+        for key, value in node.items():
+            check_values(value, f"{path}/{key}", allowed_null)
+        if "se" in node:
+            require(finite(node["se"], f"{path}/se") > 0, f"{path}: standard error must be positive")
+        if "p" in node:
+            require(0 <= finite(node["p"], f"{path}/p") <= 1, f"{path}: p-value out of range")
+        if {"coef", "ci_lo", "ci_hi"} <= set(node):
+            require(node["ci_lo"] < node["coef"] < node["ci_hi"], f"{path}: interval excludes estimate")
+
+
 def finite(value, what: str) -> float:
     require(isinstance(value, (int, float)) and not isinstance(value, bool)
             and math.isfinite(value), f"{what}: expected a finite number, got {value!r}")
@@ -111,6 +142,8 @@ def check_forecast_tables(root: Path = ROOT) -> None:
                 "market_on_blend_sample", "top_features", "backtest", "closing_vs_prematch",
                 "demargin_robustness", "blend_gap_by_season"):
         require(key in result, f"forecasting results.json lacks '{key}'")
+    # The blend starts a season later, so its first test-season score is the only gap.
+    check_values(result, "forecasting", allowed_null={"forecasting/rps_by_season/blend/2017-18"})
     pooled = result["pooled"]
     require(set(pooled) == {*STANDALONE_MODELS, "market", "blend"},
             f"Unexpected model set in pooled metrics: {sorted(pooled)}")
@@ -177,9 +210,13 @@ def check_forecast_tables(root: Path = ROOT) -> None:
               tolerance=1.1e-5, what=f"blend gap {season}")
         require(0 <= finite(gap["p"], f"blend gap {season} p") <= 1, f"blend gap {season}: p out of range")
 
-    # t4: permutation importance, sorted, with the top ten mirrored in the JSON
+    # t4: one row per model feature, sorted, with the top ten mirrored in the JSON
     t4 = read_table(tables / "t4_permutation_importance.csv")
-    importances = [float(r["importance"]) for r in t4]
+    require(sorted(r["feature"] for r in t4) == sorted(GBM_FEATURES),
+            "t4 must list each model feature exactly once")
+    importances = [finite(float(r["importance"]), f"t4 {r['feature']} importance") for r in t4]
+    require(all(finite(float(r["std"]), f"t4 {r['feature']} std") >= 0 for r in t4),
+            "t4 standard deviations must be non-negative")
     require(importances == sorted(importances, reverse=True), "t4 is not sorted by importance")
     top = result["top_features"]
     require(len(top) == 10 and len(t4) >= 10, "top_features must hold the ten leading rows")
@@ -211,7 +248,13 @@ def check_forecast_tables(root: Path = ROOT) -> None:
             require([int(r["bin"]) for r in rows] == list(range(len(rows))) and 2 <= len(rows) <= 10,
                     f"cal_{model}_{label}: bins are not sequential")
             n = [int(r["n"]) for r in rows]
-            require(sum(n) == pooled[model]["n"], f"cal_{model}_{label}: n does not sum to the sample")
+            require(sum(n) == pooled[model]["n"] and min(n) > 0,
+                    f"cal_{model}_{label}: bin sizes must be positive and sum to the sample")
+            means = [float(r["p_mean"]) for r in rows]
+            rates = [float(r["o_rate"]) for r in rows]
+            require(all(0 <= v <= 1 for v in means + rates), f"cal_{model}_{label}: value outside [0, 1]")
+            require(all(a < b for a, b in zip(means, means[1:])),
+                    f"cal_{model}_{label}: quantile-bin means must increase")
             ece = sum(k * abs(float(r["p_mean"]) - float(r["o_rate"])) for k, r in zip(n, rows)) / sum(n)
             close(ece, result["ece"][f"{model}_{label}_ece"], tolerance=1e-6,
                   what=f"cal_{model}_{label} ECE")
@@ -291,21 +334,8 @@ def check_home_tables(root: Path = ROOT) -> None:
                 close(match.group(3), saved["se"], tolerance=5.1e-4, what=f"{name} {outcome} {regressor} se")
                 require(match.group(2) == stars(saved["p"]), f"{name} {outcome} {regressor}: stars")
 
-    # Every reported estimate has a positive standard error and a valid p-value
-    def walk(node, path):
-        if isinstance(node, dict):
-            if {"coef", "se", "p"} <= set(node):
-                se = finite(node["se"], f"{path} se")
-                require(se > 0, f"{path}: standard error must be positive")
-                require(0 <= finite(node["p"], f"{path} p") <= 1, f"{path}: p out of range")
-                if "ci_lo" in node:
-                    require(node["ci_lo"] < node["coef"] < node["ci_hi"], f"{path}: CI excludes estimate")
-            else:
-                for key, value in node.items():
-                    walk(value, f"{path}/{key}")
-    for section in ("main", "recovery", "recovery_clean", "strict", "s1920", "placebo",
-                    "by_league", "bookmaker"):
-        walk(result[section], section)
+    # Every estimate and contrast: positive standard error, valid p-value, finite values
+    check_values(result, "home-advantage")
     require(set(result["by_league"]) == set(result["league_margin_by_period"]["pre"]),
             "by_league must cover the five leagues")
     for league, specs in result["by_league"].items():
@@ -321,9 +351,11 @@ def check_figures(root: Path = ROOT) -> None:
     expected += [root / "home-advantage/output/figures" / f"{n}.png" for n in HOME_FIGURES]
     for image in expected:
         require(image.is_file(), f"Missing figure {image.relative_to(root)}")
-        head = image.read_bytes()[:24]
-        require(head[:8] == b"\x89PNG\r\n\x1a\n" and head[12:16] == b"IHDR",
-                f"Not a PNG file: {image.relative_to(root)}")
+        data = image.read_bytes()
+        head = data[:24]
+        require(head[:8] == b"\x89PNG\r\n\x1a\n" and head[12:16] == b"IHDR"
+                and data.endswith(b"\x00\x00\x00\x00IEND\xaeB`\x82"),
+                f"Not a complete PNG file: {image.relative_to(root)}")
         width, height = int.from_bytes(head[16:20], "big"), int.from_bytes(head[20:24], "big")
         require(width > 100 and height > 100, f"Implausible image size in {image.relative_to(root)}")
     print(f"PASS all {len(expected)} figure files are present PNG images")
@@ -346,23 +378,35 @@ def check_manifest(root: Path = ROOT) -> None:
 
 
 def tracked_files(root: Path):
-    """Paths git tracks under root, or None outside a git checkout."""
+    """Paths git tracks under root, or None when git is absent or root is not a checkout.
+
+    Any other git failure (for example a checkout git refuses as having dubious
+    ownership) is an error, so the tracked-files guarantee never lapses silently.
+    """
     try:
         listing = subprocess.run(["git", "-C", str(root), "ls-files", "-z"],
                                  capture_output=True, check=True)
-    except (OSError, subprocess.CalledProcessError):
+    except OSError:
         return None
+    except subprocess.CalledProcessError as error:
+        message = error.stderr.decode("utf-8", "replace").strip()
+        if "not a git repository" in message:
+            return None
+        raise CheckFailure(f"git could not list tracked files: {message}") from error
     tracked = {(root / p).resolve() for p in listing.stdout.decode("utf-8").split("\0") if p}
     return tracked or None
 
 
-def check_documentation(root: Path = ROOT) -> None:
+def check_documentation(root: Path = ROOT, release: bool = True) -> None:
     """Local links resolve to published files; no placeholder or local-only text.
 
     In a git checkout only tracked Markdown is scanned and a link counts only
     when its target is tracked, so private or ignored files never satisfy a
-    link that would break once the repository is published.
+    link that would break once the repository is published. With
+    release=False (synthetic smoke runs) the pending-regeneration marker is
+    allowed, since only a real-data rerun can resolve it.
     """
+    forbidden = FORBIDDEN_TEXT + ((PENDING_MARKER,) if release else ())
     root = root.resolve()
     tracked = tracked_files(root)
 
@@ -382,8 +426,9 @@ def check_documentation(root: Path = ROOT) -> None:
     failures = []
     for path in paths:
         text = path.read_text(encoding="utf-8")
-        if "[Author Name]" in text or "/Users/" in text:
-            failures.append(f"Unfinished or local-only content: {path.relative_to(root)}")
+        for marker in forbidden:
+            if marker in text:
+                failures.append(f"Unfinished or local-only content ({marker}): {path.relative_to(root)}")
         for target in re.findall(r"\]\(([^)]+)\)", text):
             target = target.strip().split(' "')[0].strip("<>")
             if urlparse(target).scheme or target.startswith("#"):
@@ -395,10 +440,10 @@ def check_documentation(root: Path = ROOT) -> None:
     print(f"PASS local documentation links in {len(paths)} Markdown files resolve to published files")
 
 
-def check_consistency(root: Path = ROOT) -> None:
-    for check in (check_forecast_tables, check_home_tables, check_figures,
-                  check_manifest, check_documentation):
+def check_consistency(root: Path = ROOT, release: bool = True) -> None:
+    for check in (check_forecast_tables, check_home_tables, check_figures, check_manifest):
         check(root)
+    check_documentation(root, release=release)
 
 
 # --------------------------------------------------------------------------
@@ -411,15 +456,18 @@ def check_published_forecast() -> None:
     for model in (*STANDALONE_MODELS, "market"):
         require(pooled[model]["n"] == 16106, f"{model}: expected 16,106 test matches")
     require(pooled["blend"]["n"] == 14280, "blend: expected 14,280 test matches")
+    # The market benchmark depends only on the recorded source snapshot, not on the models.
+    close(pooled["market"]["rps"], 0.19511, what="market RPS")
+    close(result["market_on_blend_sample"]["rps"], 0.19578, what="market RPS on the blend sample")
     for model in STANDALONE_MODELS:
         require(pooled["market"]["rps"] < pooled[model]["rps"],
                 f"The market must beat {model} in pooled RPS")
+    # Model-dependent values (RPS, ROI range, test statistics) are tied to the
+    # README text by tests/test_release.py, so they need no constants here.
     rois = [result["backtest"][model][theta]["roi"]
             for model in BACKTEST_MODELS for theta in THETAS]
     require(len(rois) == 16 and all(value < 0 for value in rois), "Every ROI must be negative")
-    close(min(rois), -0.1382091917591125, tolerance=0.0001, what="minimum ROI")
-    close(max(rois), -0.041223571749887535, tolerance=0.0001, what="maximum ROI")
-    print("PASS forecasting sample sizes, market ranking and ROI range")
+    print("PASS forecasting sample sizes, market benchmark, ranking and negative returns")
 
 
 def check_published_home() -> None:

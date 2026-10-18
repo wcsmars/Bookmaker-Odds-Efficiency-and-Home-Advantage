@@ -121,7 +121,9 @@ ax = axes[0]
 thetas = [0.0, 0.02, 0.05, 0.10]
 off = {"logit": -0.006, "gbm": -0.002, "dpois": 0.002, "blend": 0.006}
 for mdl in ["logit", "gbm", "dpois", "blend"]:
-    r = [bt[mdl][f"theta_{t}"] for t in thetas]
+    # A configuration with no bets is saved as null; plot it as a gap.
+    r = [{k: np.nan if v is None else v for k, v in bt[mdl][f"theta_{t}"].items()}
+         for t in thetas]
     xv = np.array(thetas) + off[mdl]
     ax.errorbar(xv, [100 * q["roi"] for q in r],
                 yerr=[[100 * (q["roi"] - q["ci_lo"]) for q in r],

@@ -15,12 +15,13 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parents[1]
 pred = pd.read_csv(ROOT / "data" / "predictions_scored.csv", parse_dates=["Date"])
 # Closing odds are keyed by the row position 02_models.py used as match_id, so
-# confirm that features.csv is still the file the predictions came from.
+# confirm each predicted match still has the same date, league, result and prices.
+MATCH_KEY = ["Date", "Div", "y", "B365H", "B365D", "B365A"]
 feat = pd.read_csv(ROOT / "data" / "features.csv",
-                   usecols=["Date", "B365CH", "B365CD", "B365CA"], parse_dates=["Date"])
+                   usecols=[*MATCH_KEY, "B365CH", "B365CD", "B365CA"], parse_dates=["Date"])
 feat["match_id"] = np.arange(len(feat))
-match_dates = pred.drop_duplicates("match_id").set_index("match_id")["Date"]
-if not feat.set_index("match_id")["Date"].reindex(match_dates.index).equals(match_dates):
+expected = pred.drop_duplicates("match_id").set_index("match_id")[MATCH_KEY]
+if not feat.set_index("match_id")[MATCH_KEY].reindex(expected.index).equals(expected):
     raise ValueError("features.csv does not match predictions_scored.csv; rerun 02_models.py.")
 pred = pred.merge(feat[["match_id", "B365CH", "B365CD", "B365CA"]], on="match_id", how="left")
 rng = np.random.default_rng(42)

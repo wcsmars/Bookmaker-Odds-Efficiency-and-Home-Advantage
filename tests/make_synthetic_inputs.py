@@ -60,7 +60,15 @@ def round_robin(teams, rng):
 
 
 def round_dates(div, season, n_rounds):
-    """One weekend date per round, honouring the 2019-20 stoppage and later breaks."""
+    """First date of each round: weekly from a fixed start, with the 2019-20
+    stoppage (Ligue 1 abandoned, other leagues resuming every four days) and the
+    2022 World Cup break. None marks a round that was never played."""
+    if season == "1920" and div == "F1":
+        # Weekly rounds with a winter break; round 28 on 2020-03-07, then abandoned.
+        dates = [pd.Timestamp("2019-08-10") + pd.Timedelta(days=7 * r) if r < 20
+                 else pd.Timestamp("2020-01-18") + pd.Timedelta(days=7 * (r - 20))
+                 for r in range(n_rounds)]
+        return [d if d <= pd.Timestamp("2020-03-07") else None for d in dates]
     start = {"2021": "2020-09-12", "2223": "2022-08-06"}.get(season, f"20{season[:2]}-08-09")
     dates, day = [], pd.Timestamp(start)
     for _ in range(n_rounds):
@@ -70,12 +78,6 @@ def round_dates(div, season, n_rounds):
             day = pd.Timestamp("2022-12-24")  # World Cup break
     if season != "1920":
         return dates
-    if div == "F1":
-        # Weekly rounds with a winter break; round 28 on 2020-03-07, then abandoned.
-        dates = [pd.Timestamp("2019-08-10") + pd.Timedelta(days=7 * r) if r < 20
-                 else pd.Timestamp("2020-01-18") + pd.Timedelta(days=7 * (r - 20))
-                 for r in range(n_rounds)]
-        return [d if d <= pd.Timestamp("2020-03-07") else None for d in dates]
     # Rounds after the stoppage are played every four days from the restart date.
     cutoff = pd.Timestamp(GHOST_START[div]) - pd.Timedelta(days=5)
     restart = pd.Timestamp(RESTART[div])
@@ -121,13 +123,13 @@ def write_inputs(out: Path, seed: int = 7, truth_path: Path | None = None) -> in
                 dfn[t] = 0.85 * dfn[t] + rng.normal(0, 0.07)
             rounds = round_robin(current, rng)
             rows = []
-            for i_round, (rnd, weekend) in enumerate(zip(rounds, round_dates(div, season, len(rounds)))):
-                if weekend is None:
+            for i_round, (rnd, first_day) in enumerate(zip(rounds, round_dates(div, season, len(rounds)))):
+                if first_day is None:
                     continue
                 for i, (h, a) in enumerate(rnd):
                     if div == "F1" and season == "1920" and i_round == 27 and i >= 9:
                         continue  # the abandoned round was only half played
-                    date = weekend + pd.Timedelta(days=i % 2)  # Saturday / Sunday split
+                    date = first_day + pd.Timedelta(days=i % 2)  # each round spans two days
                     per = period_of(div, date)
                     boost = 0.08 if (per == "post" and season == "2425") else HOME_BOOST[per]
                     base = np.log(1.30)
