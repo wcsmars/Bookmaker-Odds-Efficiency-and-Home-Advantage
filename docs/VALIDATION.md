@@ -32,10 +32,10 @@ release corrects two output inconsistencies:
 - `table4_s1920.csv` then switched from one-way to two-way home/away team-season
   standard errors, and both specifications were kept in the result JSON. The
   October 2026 revision below replaces both.
-- Permutation importance now uses the gradient-boosting model's native missing
-  feature handling, matching the main model pipeline. The Elo-difference
-  importance is 0.09770; its leading rank and the forecast/betting conclusions
-  are unchanged.
+- Permutation importance then switched to the gradient-boosting model's native
+  missing-feature handling, matching the main model pipeline. In that release the
+  Elo-difference importance was 0.09770; its leading rank and the
+  forecast/betting conclusions were unchanged.
 
 The rebuilt outputs were also compared between the existing research environment
 and the freshly installed environment. Rounded reported scores and estimates
@@ -55,11 +55,15 @@ busier machine than the original validation.
 An audit of the release found problems that the earlier checks could not detect.
 The code was corrected as follows.
 
-- **Within-2019–20 table and league-level estimates.** Clustering on home and away
-  team-season groups, which coincide with the absorbed team-season strengths, made
-  the clustered variance largely cancel. The published Ligue 1 closed-period
-  goal-margin standard error was 0.00005 (p = 0), and in simulations with this
-  design those standard errors were 20–45% of the true sampling spread. Both
+- **Within-2019–20 table and league-level estimates.** Both clustered on home and
+  away team-season groups, which coincide with the absorbed team-season strengths.
+  For coefficients whose indicator does not vary within a team-season (the
+  intercept, and the league-level closed-period and post-pandemic indicators) the
+  clustered variance largely cancelled. The published Ligue 1 closed-period
+  goal-margin standard error was 0.00005 (p = 0). In simulations with this design
+  the league-level standard errors were 20–45% of the true sampling spread and the
+  within-2019–20 intercept's about half; the within-2019–20 closed-stadium
+  coefficient, whose indicator varies within the season, was about right. Both
   specifications now cluster by league matchday (league × calendar date), and
   `s1920_twoway` is no longer written.
 - **Forecasting features.** The six matches without a complete Bet365 price now
@@ -93,8 +97,9 @@ study's design, with independent errors or with club-specific home advantage
 REGENERATION PENDING: rerun `python scripts/run_pipeline.py --verify-snapshot`
 with the recorded inputs, replace this paragraph with the old → new values of
 every changed number (forecasting headline metrics, ROI range, closing-line
-comparison and `table4_s1920.csv`), the runtime and the snapshot result, and
-update the README numbers that the unit tests flag.
+comparison, the Elo-difference permutation importance and `table4_s1920.csv`),
+the runtime and the snapshot result, and update the README numbers that the unit
+tests flag.
 
 ## Checks available without source data
 
@@ -122,8 +127,9 @@ missing, empty and revised input files.
 
 `python tests/smoke_pipeline.py` needs the research dependencies. It runs both
 studies end to end on synthetic Football-Data-style inputs in a temporary copy
-of the files git would publish, and applies the same consistency checks to the
-regenerated outputs. `python tests/simulate_coverage.py` reproduces the interval
+of the code and documents (tracked files plus new files that are not ignored, so
+git-ignored private notes are left out; outputs are always regenerated), and
+applies the same consistency checks to the regenerated outputs. `python tests/simulate_coverage.py` reproduces the interval
 coverage reported above. A GitHub Actions workflow runs the offline checks, a
 Python syntax check and the smoke test on pushes and pull requests. CI does not
 download the source data.

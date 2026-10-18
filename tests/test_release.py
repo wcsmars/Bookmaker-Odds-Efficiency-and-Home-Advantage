@@ -220,13 +220,22 @@ class ReportedClaims(unittest.TestCase):
         favourable = sorted(s for s, g in gaps.items() if g["mean_gap"] < 0)
         self.assertTrue(all(gaps[s]["p"] >= 0.05 for s in favourable),
                         "README says no season shows a significant blend improvement")
+        def join(items):  # "a", "a and b", "a, b and c"
+            items = list(items)
+            return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " and " + items[-1]
+
         words = dict(enumerate(("no", "one", "two", "three", "four", "five", "six", "seven", "eight")))
-        self.assertIn(f"small favorable point estimates in {words[len(favourable)]} seasons", text)
+        if len(favourable) == 1:
+            self.assertIn("small favorable point estimate in one season", text)
+        elif favourable:
+            self.assertIn(f"small favorable point estimates in {words[len(favourable)]} seasons", text)
+        else:
+            self.assertNotIn("favorable point estimate", text)
         deficits = sorted(s for s, g in gaps.items() if g["mean_gap"] > 0 and g["p"] < 0.05)
         label = lambda s: s.replace("-", "–")  # README writes seasons with an en dash
         if deficits:
-            seasons = " and ".join(label(s) for s in deficits)
-            p_values = " and ".join(f"{gaps[s]['p']:.3f}" for s in deficits)
+            seasons = join(label(s) for s in deficits)
+            p_values = join(f"{gaps[s]['p']:.3f}" for s in deficits)
             noun, verb = ("deficits", "are") if len(deficits) > 1 else ("deficit", "is")
             self.assertIn(f"its {noun} in {seasons} {verb} nominally significant "
                           f"(unadjusted p = {p_values})", text)

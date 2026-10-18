@@ -24,6 +24,8 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]
 COPIED = ("forecasting/src", "home-advantage/src", "scripts", "data", "tests")
+# Committed outputs are left out so every table, JSON file and figure must be regenerated.
+GENERATED = ("forecasting/output/", "home-advantage/output/")
 IGNORED = shutil.ignore_patterns("__pycache__", "*.pyc")
 
 
@@ -31,7 +33,8 @@ def publishable_files():
     """Tracked plus untracked-but-not-ignored files, or None outside a git checkout.
 
     Copying only these keeps private, git-ignored notes in a working folder out
-    of the smoke copy, so they cannot affect its documentation check.
+    of the smoke copy, so they cannot affect its documentation check. A new file
+    that is neither added nor ignored is still copied and checked.
     """
     try:
         listing = subprocess.run(
@@ -58,7 +61,10 @@ def make_copy(copy: Path) -> None:
             shutil.copy(ROOT / project / "README.md", copy / project / "README.md")
         return
     for source in files:
-        target = copy / source.relative_to(ROOT)
+        relative = source.relative_to(ROOT)
+        if relative.as_posix().startswith(GENERATED):
+            continue
+        target = copy / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy(source, target)
 

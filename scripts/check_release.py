@@ -16,6 +16,7 @@ from __future__ import annotations
 import csv
 import json
 import math
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -380,18 +381,21 @@ def check_manifest(root: Path = ROOT) -> None:
 def tracked_files(root: Path):
     """Paths git tracks under root, or None when git is absent or root is not a checkout.
 
-    Any other git failure (for example a checkout git refuses as having dubious
-    ownership) is an error, so the tracked-files guarantee never lapses silently.
+    Whether root is a checkout is decided from the folder structure, not from
+    git's (possibly translated) messages. Inside a checkout any git failure, for
+    example one git refuses as having dubious ownership, is an error, so the
+    tracked-files guarantee never lapses silently.
     """
+    if not any((folder / ".git").exists() for folder in (root, *root.parents)):
+        return None  # a downloaded archive or the smoke-test copy
     try:
         listing = subprocess.run(["git", "-C", str(root), "ls-files", "-z"],
-                                 capture_output=True, check=True)
+                                 capture_output=True, check=True,
+                                 env={**os.environ, "LC_ALL": "C", "LANGUAGE": "C"})
     except OSError:
         return None
     except subprocess.CalledProcessError as error:
         message = error.stderr.decode("utf-8", "replace").strip()
-        if "not a git repository" in message:
-            return None
         raise CheckFailure(f"git could not list tracked files: {message}") from error
     tracked = {(root / p).resolve() for p in listing.stdout.decode("utf-8").split("\0") if p}
     return tracked or None

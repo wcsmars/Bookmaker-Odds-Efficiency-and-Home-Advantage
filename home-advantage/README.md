@@ -56,4 +56,4 @@ python3 src/04_figures.py    # output/figures/*.png
 
 Paths inside the Python scripts are resolved relative to the project. The cleaner requires all 60 expected inputs rather than silently analyzing a partial download. The estimation step includes 999 bootstrap replications per tested coefficient and takes longer than cleaning or plotting.
 
-`table4_s1920.csv` reports the within-2019–20 comparison with league-matchday clustering, from `s1920` in `results.json`. Earlier releases clustered on home and away team-season. Those groups coincide with the absorbed team-season strengths, so their clustered variance largely cancels and understates uncertainty; see [the validation record](../docs/VALIDATION.md).
+`table4_s1920.csv` reports the within-2019–20 comparison with league-matchday clustering, from `s1920` in `results.json`. Earlier releases clustered on home and away team-season. Those groups coincide with the absorbed team-season strengths, which understated the intercept's standard error by about half and the league-level standard errors far more; the closed-stadium coefficient's was about right. See [the validation record](../docs/VALIDATION.md).
